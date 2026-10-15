@@ -1,22 +1,18 @@
+const mongoose = require('mongoose');
 const Group = require('../models/Group');
 const Post = require('../models/Post');
-const { isValidId, escapeRegex, cleanText, toNumber } = require('../utils/helpers');
 
-const categories = Group.schema.path('category').enumValues;
+const categories = ['Sports', 'Music', 'Tech', 'Study', 'Travel', 'Food', 'Other'];
 
-function canManage(group, user) {
-    return group.adminUser === user.username || user.isAdmin;
-}
-
-function validateGroup(name, description, category) {
+function checkGroupData(name, description, category) {
     if (name.length < 2 || name.length > 40) return 'Group name must be 2-40 characters';
     if (description.length > 300) return 'Description is too long (max 300)';
     if (!categories.includes(category)) return 'Please choose a valid category';
     return null;
 }
 
-async function findGroup(req, res) {
-    if (!isValidId(req.params.id)) {
+async function getGroup(req, res) {
+    if (!mongoose.isValidObjectId(req.params.id)) {
         res.status(400).json({ error: 'Invalid group id' });
         return null;
     }
@@ -28,24 +24,38 @@ async function findGroup(req, res) {
     return group;
 }
 
+function isGroupAdmin(group, user) {
+    return group.adminUser === user.username || user.isAdmin;
+}
+
 exports.categories = (req, res) => {
     res.json(categories);
 };
 
 exports.create = async (req, res) => {
     try {
-        const name = cleanText(req.body.name);
-        const description = cleanText(req.body.description);
-        const category = cleanText(req.body.category);
+        const name = (req.body.name || '').trim();
+        const description = (req.body.description || '').trim();
+        const category = req.body.category;
 
-        const error = validateGroup(name, description, category);
-        if (error) return res.status(400).json({ error });
+        const error = checkGroupData(name, description, category);
+        if (error) {
+            return res.status(400).json({ error: error });
+        }
 
-        const exists = await Group.findOne({ name: new RegExp('^' + escapeRegex(name) + '$', 'i') });
-        if (exists) return res.status(409).json({ error: 'A group with this name already exists' });
+        const exists = await Group.findOne({ name: name });
+        if (exists) {
+            return res.status(400).json({ error: 'A group with this name already exists' });
+        }
 
         const username = req.session.user.username;
-        const group = new Group({ name, description, category, adminUser: username, members: [username] });
+        const group = new Group({
+            name: name,
+            description: description,
+            category: category,
+            adminUser: username,
+            members: [username]
+        });
         await group.save();
         res.status(201).json(group);
     } catch (err) {
@@ -64,50 +74,44 @@ exports.list = async (req, res) => {
 
 exports.search = async (req, res) => {
     try {
-        const name = cleanText(req.query.name);
-        const category = cleanText(req.query.category);
-        const adminUser = cleanText(req.query.adminUser);
-        const minMembers = toNumber(req.query.minMembers);
-
-        if (Number.isNaN(minMembers) || (minMembers !== undefined && minMembers < 0)) {
-            return res.status(400).json({ error: 'Minimum members must be a positive number' });
-        }
-        if (category && !categories.includes(category)) {
-            return res.status(400).json({ error: 'Unknown category' });
-        }
-
+        const { name, category, adminUser } = req.query;
         const query = {};
-        if (name) query.name = new RegExp(escapeRegex(name), 'i');
+
+        if (name) query.name = new RegExp(name, 'i');
         if (category) query.category = category;
-        if (adminUser) query.adminUser = new RegExp(escapeRegex(adminUser), 'i');
-        if (minMembers !== undefined) query.$expr = { $gte: [{ $size: '$members' }, minMembers] };
+        if (adminUser) query.adminUser = new RegExp(adminUser, 'i');
 
         const groups = await Group.find(query).sort({ name: 1 });
         res.json(groups);
     } catch (err) {
-        res.status(500).json({ error: 'Search failed' });
+        res.status(400).json({ error: 'Invalid search' });
     }
 };
 
 exports.update = async (req, res) => {
     try {
-        const group = await findGroup(req, res);
+        const group = await getGroup(req, res);
         if (!group) return;
-        if (!canManage(group, req.session.user)) {
+
+        if (!isGroupAdmin(group, req.session.user)) {
             return res.status(403).json({ error: 'Only the group admin can edit this group' });
         }
 
-        const name = cleanText(req.body.name);
-        const description = cleanText(req.body.description);
-        const category = cleanText(req.body.category);
+        const name = (req.body.name || '').trim();
+        const description = (req.body.description || '').trim();
+        const category = req.body.category;
 
-        const error = validateGroup(name, description, category);
-        if (error) return res.status(400).json({ error });
+        const error = checkGroupData(name, description, category);
+        if (error) {
+            return res.status(400).json({ error: error });
+        }
 
         const oldName = group.name;
-        if (name.toLowerCase() !== oldName.toLowerCase()) {
-            const exists = await Group.findOne({ name: new RegExp('^' + escapeRegex(name) + '$', 'i') });
-            if (exists) return res.status(409).json({ error: 'A group with this name already exists' });
+        if (name !== oldName) {
+            const exists = await Group.findOne({ name: name });
+            if (exists) {
+                return res.status(400).json({ error: 'A group with this name already exists' });
+            }
         }
 
         group.name = name;
@@ -115,7 +119,7 @@ exports.update = async (req, res) => {
         group.category = category;
         await group.save();
 
-        if (oldName !== name) {
+        if (name !== oldName) {
             await Post.updateMany({ groupName: oldName }, { groupName: name });
         }
         res.json(group);
@@ -126,11 +130,13 @@ exports.update = async (req, res) => {
 
 exports.remove = async (req, res) => {
     try {
-        const group = await findGroup(req, res);
+        const group = await getGroup(req, res);
         if (!group) return;
-        if (!canManage(group, req.session.user)) {
+
+        if (!isGroupAdmin(group, req.session.user)) {
             return res.status(403).json({ error: 'Only the group admin can delete this group' });
         }
+
         await Post.deleteMany({ groupName: group.name });
         await Group.findByIdAndDelete(group._id);
         res.json({ success: true });
@@ -141,12 +147,14 @@ exports.remove = async (req, res) => {
 
 exports.join = async (req, res) => {
     try {
-        const group = await findGroup(req, res);
+        const group = await getGroup(req, res);
         if (!group) return;
+
         const username = req.session.user.username;
         if (group.members.includes(username)) {
             return res.status(400).json({ error: 'You are already a member' });
         }
+
         group.members.push(username);
         await group.save();
         res.json(group);
@@ -157,16 +165,18 @@ exports.join = async (req, res) => {
 
 exports.leave = async (req, res) => {
     try {
-        const group = await findGroup(req, res);
+        const group = await getGroup(req, res);
         if (!group) return;
+
         const username = req.session.user.username;
         if (!group.members.includes(username)) {
             return res.status(400).json({ error: 'You are not a member of this group' });
         }
         if (group.adminUser === username) {
-            return res.status(400).json({ error: 'The group admin cannot leave. Delete the group instead' });
+            return res.status(400).json({ error: 'The group admin cannot leave the group' });
         }
-        group.members = group.members.filter(m => m !== username);
+
+        group.members = group.members.filter(member => member !== username);
         await group.save();
         res.json(group);
     } catch (err) {

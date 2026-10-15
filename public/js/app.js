@@ -2,52 +2,32 @@ let currentUser = null;
 let socket = null;
 let feedMode = 'feed';
 
-function esc(text) {
-    return $('<div>').text(text === undefined || text === null ? '' : String(text)).html();
+function showMessage(selector, text, type) {
+    $(selector).removeClass('error success').addClass(type || 'error').text(text).show();
+    setTimeout(() => $(selector).fadeOut(), 3000);
 }
 
 function errorText(xhr) {
-    if (xhr.responseJSON && xhr.responseJSON.error) return xhr.responseJSON.error;
-    if (xhr.status === 0) return 'Cannot reach the server';
+    if (xhr.responseJSON && xhr.responseJSON.error) {
+        return xhr.responseJSON.error;
+    }
     return 'Something went wrong';
 }
 
-function showMessage(selector, text, type) {
-    $(selector)
-        .stop(true, true)
-        .removeClass('error success')
-        .addClass(type || 'error')
-        .text(text)
-        .fadeIn(200)
-        .delay(3500)
-        .fadeOut(400);
+function sendJson(method, url, data) {
+    return $.ajax({
+        url: url,
+        method: method,
+        contentType: 'application/json',
+        data: JSON.stringify(data || {})
+    });
 }
 
-function api(method, url, data) {
-    const options = { url, method, dataType: 'json' };
-    if (data !== undefined) {
-        options.contentType = 'application/json';
-        options.data = JSON.stringify(data);
-    }
-    return $.ajax(options);
-}
-
-function formatDate(value) {
-    return new Date(value).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
-}
-
-$(document).ajaxError((event, xhr) => {
-    if (xhr.status === 401 && currentUser) {
-        alert('Your session has expired. Please log in again.');
-        location.reload();
-    }
-});
-
-$(document).on('components-ready', () => {
-    api('GET', '/api/users/me')
+function checkSession() {
+    $.get('/api/users/me')
         .done(user => startApp(user))
         .fail(() => $('#auth-container').fadeIn());
-});
+}
 
 $('#showRegister').click(() => {
     $('#login-form').hide();
@@ -62,10 +42,12 @@ $('#showLogin').click(() => {
 $('#loginBtn').click(() => {
     const username = $('#loginUsername').val().trim();
     const password = $('#loginPassword').val().trim();
-    if (!username || !password) {
+
+    if (username === '' || password === '') {
         return showMessage('#auth-message', 'Please enter username and password');
     }
-    api('POST', '/api/users/login', { username, password })
+
+    sendJson('POST', '/api/users/login', { username: username, password: password })
         .done(() => location.reload())
         .fail(xhr => showMessage('#auth-message', errorText(xhr)));
 });
@@ -82,8 +64,9 @@ $('#registerBtn').click(() => {
         city: $('#regCity').val().trim(),
         age: $('#regAge').val()
     };
-    if (!/^[a-zA-Z0-9_]{3,20}$/.test(data.username)) {
-        return showMessage('#auth-message', 'Username must be 3-20 letters, numbers or _');
+
+    if (data.username.length < 3 || data.username.length > 20 || data.username.includes(' ')) {
+        return showMessage('#auth-message', 'Username must be 3-20 characters without spaces');
     }
     if (data.password.length < 3) {
         return showMessage('#auth-message', 'Password must be at least 3 characters');
@@ -91,13 +74,14 @@ $('#registerBtn').click(() => {
     if (data.age !== '' && (data.age < 13 || data.age > 120)) {
         return showMessage('#auth-message', 'Age must be between 13 and 120');
     }
-    api('POST', '/api/users/register', data)
+
+    sendJson('POST', '/api/users/register', data)
         .done(() => location.reload())
         .fail(xhr => showMessage('#auth-message', errorText(xhr)));
 });
 
 function logout() {
-    api('POST', '/api/users/logout').always(() => location.reload());
+    $.post('/api/users/logout', () => location.reload());
 }
 
 function startApp(user) {
@@ -129,13 +113,15 @@ $('#saveProfileBtn').click(() => {
         age: $('#profileAge').val(),
         password: $('#profilePassword').val().trim()
     };
+
     if (data.age !== '' && (data.age < 13 || data.age > 120)) {
         return showMessage('#profile-message', 'Age must be between 13 and 120');
     }
-    if (data.password && data.password.length < 3) {
+    if (data.password !== '' && data.password.length < 3) {
         return showMessage('#profile-message', 'Password must be at least 3 characters');
     }
-    api('PUT', `/api/users/${currentUser._id}`, data)
+
+    sendJson('PUT', '/api/users/' + currentUser._id, data)
         .done(user => {
             currentUser = user;
             fillProfile();
@@ -145,8 +131,9 @@ $('#saveProfileBtn').click(() => {
 });
 
 $('#deleteAccountBtn').click(() => {
-    if (!confirm('Delete your account and all your posts? This cannot be undone.')) return;
-    api('DELETE', `/api/users/${currentUser._id}`)
+    if (!confirm('Delete your account and all your posts?')) return;
+
+    $.ajax({ url: '/api/users/' + currentUser._id, method: 'DELETE' })
         .done(() => location.reload())
         .fail(xhr => showMessage('#profile-message', errorText(xhr)));
 });
@@ -156,7 +143,7 @@ $('.tab').click(function () {
     $('.tab').removeClass('active');
     $(this).addClass('active');
     $('.tab-content').hide();
-    $(`#tab-${tab}`).fadeIn(200);
+    $('#tab-' + tab).fadeIn(200);
 
     if (tab === 'myposts') loadMyPosts();
     if (tab === 'groups') loadGroups();
@@ -164,40 +151,38 @@ $('.tab').click(function () {
     if (tab === 'stats') loadStats();
 });
 
-function switchTab(tab) {
-    $(`.tab[data-tab="${tab}"]`).click();
-}
-
 function buildPost(post) {
-    const card = $('<div class="post-card">');
-    const header = $('<div class="post-header">');
-    header.append($('<div>')
-        .append($('<span class="post-author">').text(post.author))
-        .append(' ')
-        .append($('<span class="badge">').text(post.groupName)));
-    header.append($('<div class="post-date">').text(formatDate(post.createdAt)));
-    card.append(header);
-    card.append($('<div class="post-content">').text(post.content));
+    const card = $('<div class="post-card"></div>');
 
-    const actions = $('<div class="btn-group">');
-    actions.append($('<button class="btn btn-small btn-outline like-post">')
+    const header = $('<div class="post-header"></div>');
+    const who = $('<div></div>');
+    who.append($('<span class="post-author"></span>').text(post.author));
+    who.append(' ');
+    who.append($('<span class="badge"></span>').text(post.groupName));
+    header.append(who);
+    header.append($('<div class="post-date"></div>').text(new Date(post.createdAt).toLocaleString()));
+
+    card.append(header);
+    card.append($('<div class="post-content"></div>').text(post.content));
+
+    const actions = $('<div class="btn-group"></div>');
+    actions.append($('<button class="btn btn-small btn-outline like-post"></button>')
         .attr('data-id', post._id)
-        .text(`Like (${post.likes})`));
+        .text('Like (' + post.likes + ')'));
 
     if (currentUser.isAdmin || currentUser.username === post.author) {
-        actions.append($('<button class="btn btn-small btn-outline edit-post">')
+        actions.append($('<button class="btn btn-small btn-outline edit-post">Edit</button>')
             .attr('data-id', post._id)
-            .data('content', post.content)
-            .text('Edit'));
-        actions.append($('<button class="btn btn-small btn-danger delete-post">')
-            .attr('data-id', post._id)
-            .text('Delete'));
+            .data('content', post.content));
+        actions.append($('<button class="btn btn-small btn-danger delete-post">Delete</button>')
+            .attr('data-id', post._id));
     }
+
     card.append(actions);
     return card;
 }
 
-function renderPosts(container, posts) {
+function showPosts(container, posts) {
     $(container).empty();
     if (posts.length === 0) {
         $(container).append('<p class="empty">No posts found.</p>');
@@ -207,27 +192,32 @@ function renderPosts(container, posts) {
 }
 
 function loadPosts() {
-    const url = feedMode === 'feed' ? '/api/posts/feed' : '/api/posts';
-    $('#feedTitle').text(feedMode === 'feed' ? 'My Feed' : 'All Posts');
+    let url = '/api/posts/feed';
+    $('#feedTitle').text('My Feed');
+    if (feedMode === 'all') {
+        url = '/api/posts';
+        $('#feedTitle').text('All Posts');
+    }
+
     $('#showFeedBtn').toggleClass('btn-outline', feedMode !== 'feed');
     $('#showAllBtn').toggleClass('btn-outline', feedMode !== 'all');
-    api('GET', url)
-        .done(posts => renderPosts('#feed', posts))
-        .fail(xhr => $('#feed').html(`<p class="empty">${esc(errorText(xhr))}</p>`));
+
+    $.get(url, posts => showPosts('#feed', posts));
 }
 
 function loadMyPosts() {
-    api('GET', '/api/posts/mine')
-        .done(posts => {
-            renderPosts('#my-posts', posts);
-            window.renderMedia(currentUser.username, posts.length);
-        });
+    $.get('/api/posts/mine', posts => {
+        showPosts('#my-posts', posts);
+        window.renderMedia(currentUser.username, posts.length);
+    });
 }
 
-function refreshAfterPostChange() {
+function refreshPosts() {
     loadPosts();
     loadMyPosts();
-    if ($('#tab-stats').is(':visible')) loadStats();
+    if ($('#tab-stats').is(':visible')) {
+        loadStats();
+    }
 }
 
 $('#showFeedBtn').click(() => {
@@ -245,30 +235,26 @@ $('#createPostBtn').click(() => {
         content: $('#postContent').val().trim(),
         groupName: $('#groupSelect').val()
     };
+
     if (!data.groupName) {
         return showMessage('#post-message', 'Join or create a group before posting');
     }
-    if (!data.content) {
+    if (data.content === '') {
         return showMessage('#post-message', 'Post cannot be empty');
     }
-    if (data.content.length > 500) {
-        return showMessage('#post-message', 'Post is too long (max 500)');
-    }
-    api('POST', '/api/posts', data)
+
+    sendJson('POST', '/api/posts', data)
         .done(() => {
             $('#postContent').val('');
             showMessage('#post-message', 'Post published', 'success');
-            refreshAfterPostChange();
+            refreshPosts();
         })
         .fail(xhr => showMessage('#post-message', errorText(xhr)));
 });
 
 $(document).on('click', '.like-post', function () {
-    api('POST', `/api/posts/${$(this).attr('data-id')}/like`)
-        .done(() => {
-            loadPosts();
-            loadMyPosts();
-        })
+    $.post('/api/posts/' + $(this).attr('data-id') + '/like')
+        .done(() => refreshPosts())
         .fail(xhr => alert(errorText(xhr)));
 });
 
@@ -276,20 +262,22 @@ $(document).on('click', '.edit-post', function () {
     const id = $(this).attr('data-id');
     const oldContent = $(this).data('content');
     const newContent = prompt('Edit your post:', oldContent);
-    if (newContent === null) return;
-    if (!newContent.trim()) return alert('Post cannot be empty');
-    if (newContent.length > 500) return alert('Post is too long (max 500)');
-    if (newContent.trim() === oldContent) return;
 
-    api('PUT', `/api/posts/${id}`, { content: newContent.trim() })
-        .done(() => refreshAfterPostChange())
+    if (newContent === null || newContent.trim() === oldContent) return;
+    if (newContent.trim() === '') {
+        return alert('Post cannot be empty');
+    }
+
+    sendJson('PUT', '/api/posts/' + id, { content: newContent.trim() })
+        .done(() => refreshPosts())
         .fail(xhr => alert(errorText(xhr)));
 });
 
 $(document).on('click', '.delete-post', function () {
     if (!confirm('Delete this post?')) return;
-    api('DELETE', `/api/posts/${$(this).attr('data-id')}`)
-        .done(() => refreshAfterPostChange())
+
+    $.ajax({ url: '/api/posts/' + $(this).attr('data-id'), method: 'DELETE' })
+        .done(() => refreshPosts())
         .fail(xhr => alert(errorText(xhr)));
 });
 
@@ -301,13 +289,15 @@ $('#searchPostsBtn').click(() => {
         fromDate: $('#searchFrom').val(),
         toDate: $('#searchTo').val()
     };
+
     if (params.fromDate && params.toDate && params.fromDate > params.toDate) {
         return showMessage('#post-search-message', 'From date must be before To date');
     }
-    api('GET', '/api/posts/search?' + $.param(params))
+
+    $.get('/api/posts/search', params)
         .done(posts => {
-            $('#feedTitle').text(`Search Results (${posts.length})`);
-            renderPosts('#feed', posts);
+            $('#feedTitle').text('Search Results (' + posts.length + ')');
+            showPosts('#feed', posts);
         })
         .fail(xhr => showMessage('#post-search-message', errorText(xhr)));
 });
@@ -318,75 +308,65 @@ $('#clearPostsSearchBtn').click(() => {
 });
 
 function loadCategories() {
-    api('GET', '/api/groups/categories').done(list => {
-        $('#groupCategory').empty().append(new Option('Choose category', ''));
-        $('#searchGroupCategory').empty().append(new Option('Any category', ''));
-        list.forEach(c => {
-            $('#groupCategory').append(new Option(c, c));
-            $('#searchGroupCategory').append(new Option(c, c));
+    $.get('/api/groups/categories', categories => {
+        $('#groupCategory').empty().append('<option value="">Choose category</option>');
+        $('#searchGroupCategory').empty().append('<option value="">Any category</option>');
+        categories.forEach(category => {
+            $('#groupCategory').append(new Option(category, category));
+            $('#searchGroupCategory').append(new Option(category, category));
         });
     });
 }
 
-function canManageGroup(group) {
-    return currentUser.isAdmin || group.adminUser === currentUser.username;
-}
-
 function buildGroup(group) {
     const isMember = group.members.includes(currentUser.username);
-    const card = $('<div class="group-card">');
-    card.append($('<h4>').text(group.name));
-    card.append($('<span class="badge">').text(group.category));
-    card.append($('<p>').text(group.description || 'No description'));
-    card.append($('<p class="muted">').text(`Admin: ${group.adminUser} | ${group.members.length} member${group.members.length === 1 ? '' : 's'}`));
+    const isGroupAdmin = currentUser.isAdmin || group.adminUser === currentUser.username;
 
-    const actions = $('<div class="btn-group">');
-    if (isMember) {
-        if (group.adminUser !== currentUser.username) {
-            actions.append($('<button class="btn btn-small btn-grey leave-group">').attr('data-id', group._id).text('Leave'));
-        }
-    } else {
-        actions.append($('<button class="btn btn-small join-group">').attr('data-id', group._id).text('Join'));
+    const card = $('<div class="group-card"></div>');
+    card.append($('<h4></h4>').text(group.name));
+    card.append($('<span class="badge"></span>').text(group.category));
+    card.append($('<p></p>').text(group.description || 'No description'));
+    card.append($('<p class="muted"></p>').text('Admin: ' + group.adminUser + ' | Members: ' + group.members.length));
+
+    const actions = $('<div class="btn-group"></div>');
+    if (!isMember) {
+        actions.append($('<button class="btn btn-small join-group">Join</button>').attr('data-id', group._id));
+    } else if (group.adminUser !== currentUser.username) {
+        actions.append($('<button class="btn btn-small btn-grey leave-group">Leave</button>').attr('data-id', group._id));
     }
-    actions.append($('<button class="btn btn-small btn-outline view-group-posts">').data('name', group.name).text('Posts'));
-    if (canManageGroup(group)) {
-        actions.append($('<button class="btn btn-small btn-outline edit-group">').data('group', group).text('Edit'));
-        actions.append($('<button class="btn btn-small btn-danger delete-group">').attr('data-id', group._id).text('Delete'));
+    actions.append($('<button class="btn btn-small btn-outline view-group-posts">Posts</button>').data('name', group.name));
+    if (isGroupAdmin) {
+        actions.append($('<button class="btn btn-small btn-outline edit-group">Edit</button>').data('group', group));
+        actions.append($('<button class="btn btn-small btn-danger delete-group">Delete</button>').attr('data-id', group._id));
     }
+
     card.append(actions);
     return card;
 }
 
-function renderGroups(groups) {
+function showGroups(groups) {
     $('#groups-list').empty();
     if (groups.length === 0) {
         $('#groups-list').append('<p class="empty">No groups found.</p>');
         return;
     }
-    groups.forEach(g => $('#groups-list').append(buildGroup(g)));
-}
-
-function fillGroupSelect(groups) {
-    const selected = $('#groupSelect').val();
-    $('#groupSelect').empty();
-    groups
-        .filter(g => g.members.includes(currentUser.username))
-        .forEach(g => $('#groupSelect').append(new Option(g.name, g.name)));
-    if (selected) $('#groupSelect').val(selected);
+    groups.forEach(group => $('#groups-list').append(buildGroup(group)));
 }
 
 function loadGroups() {
-    api('GET', '/api/groups')
-        .done(groups => {
-            fillGroupSelect(groups);
-            renderGroups(groups);
-        })
-        .fail(xhr => $('#groups-list').html(`<p class="empty">${esc(errorText(xhr))}</p>`));
+    $.get('/api/groups', groups => {
+        $('#groupSelect').empty();
+        groups.forEach(group => {
+            if (group.members.includes(currentUser.username)) {
+                $('#groupSelect').append(new Option(group.name, group.name));
+            }
+        });
+        showGroups(groups);
+    });
 }
 
 function resetGroupForm() {
-    $('#groupEditId, #groupName, #groupDescription').val('');
-    $('#groupCategory').val('');
+    $('#groupEditId, #groupName, #groupDescription, #groupCategory').val('');
     $('#groupFormTitle').text('Create Group');
     $('#saveGroupBtn').text('Create');
     $('#cancelGroupEditBtn').addClass('hidden');
@@ -399,21 +379,27 @@ $('#saveGroupBtn').click(() => {
         category: $('#groupCategory').val(),
         description: $('#groupDescription').val().trim()
     };
+
     if (data.name.length < 2 || data.name.length > 40) {
         return showMessage('#group-message', 'Group name must be 2-40 characters');
     }
-    if (!data.category) {
+    if (data.category === '') {
         return showMessage('#group-message', 'Please choose a category');
     }
 
-    const request = id ? api('PUT', `/api/groups/${id}`, data) : api('POST', '/api/groups', data);
+    let request;
+    if (id) {
+        request = sendJson('PUT', '/api/groups/' + id, data);
+    } else {
+        request = sendJson('POST', '/api/groups', data);
+    }
+
     request
         .done(() => {
             showMessage('#group-message', id ? 'Group updated' : 'Group created', 'success');
             resetGroupForm();
             loadGroups();
-            loadPosts();
-            loadMyPosts();
+            refreshPosts();
         })
         .fail(xhr => showMessage('#group-message', errorText(xhr)));
 });
@@ -426,7 +412,7 @@ $(document).on('click', '.edit-group', function () {
     $('#groupName').val(group.name);
     $('#groupCategory').val(group.category);
     $('#groupDescription').val(group.description);
-    $('#groupFormTitle').text(`Edit Group: ${group.name}`);
+    $('#groupFormTitle').text('Edit Group: ' + group.name);
     $('#saveGroupBtn').text('Save');
     $('#cancelGroupEditBtn').removeClass('hidden');
     $('html, body').animate({ scrollTop: 0 }, 300);
@@ -434,17 +420,18 @@ $(document).on('click', '.edit-group', function () {
 
 $(document).on('click', '.delete-group', function () {
     if (!confirm('Delete this group and all of its posts?')) return;
-    api('DELETE', `/api/groups/${$(this).attr('data-id')}`)
+
+    $.ajax({ url: '/api/groups/' + $(this).attr('data-id'), method: 'DELETE' })
         .done(() => {
             resetGroupForm();
             loadGroups();
-            refreshAfterPostChange();
+            refreshPosts();
         })
         .fail(xhr => showMessage('#group-message', errorText(xhr)));
 });
 
 $(document).on('click', '.join-group', function () {
-    api('POST', `/api/groups/${$(this).attr('data-id')}/join`)
+    $.post('/api/groups/' + $(this).attr('data-id') + '/join')
         .done(() => {
             loadGroups();
             loadPosts();
@@ -453,7 +440,7 @@ $(document).on('click', '.join-group', function () {
 });
 
 $(document).on('click', '.leave-group', function () {
-    api('POST', `/api/groups/${$(this).attr('data-id')}/leave`)
+    $.post('/api/groups/' + $(this).attr('data-id') + '/leave')
         .done(() => {
             loadGroups();
             loadPosts();
@@ -464,7 +451,7 @@ $(document).on('click', '.leave-group', function () {
 $(document).on('click', '.view-group-posts', function () {
     $('#searchAuthor, #searchContent, #searchFrom, #searchTo').val('');
     $('#searchGroup').val($(this).data('name'));
-    switchTab('feed');
+    $('.tab[data-tab="feed"]').click();
     $('#searchPostsBtn').click();
 });
 
@@ -472,51 +459,51 @@ $('#searchGroupsBtn').click(() => {
     const params = {
         name: $('#searchGroupName').val().trim(),
         category: $('#searchGroupCategory').val(),
-        adminUser: $('#searchGroupAdmin').val().trim(),
-        minMembers: $('#searchGroupMinMembers').val()
+        adminUser: $('#searchGroupAdmin').val().trim()
     };
-    if (params.minMembers !== '' && params.minMembers < 0) {
-        return showMessage('#group-search-message', 'Minimum members cannot be negative');
-    }
-    api('GET', '/api/groups/search?' + $.param(params))
-        .done(renderGroups)
+
+    $.get('/api/groups/search', params)
+        .done(groups => showGroups(groups))
         .fail(xhr => showMessage('#group-search-message', errorText(xhr)));
 });
 
 $('#clearGroupsSearchBtn').click(() => {
-    $('#searchGroupName, #searchGroupAdmin, #searchGroupMinMembers').val('');
-    $('#searchGroupCategory').val('');
+    $('#searchGroupName, #searchGroupAdmin, #searchGroupCategory').val('');
     loadGroups();
 });
 
 function buildUser(user) {
-    const row = $('<div class="user-row">');
-    const info = $('<div>');
-    info.append($('<strong>').text(user.username));
-    if (user.isAdmin) info.append(' ', $('<span class="badge">').text('Admin'));
-    const details = [user.fullName, user.city, user.age ? `age ${user.age}` : ''].filter(Boolean).join(' | ');
-    info.append($('<div class="muted">').text(details || 'No details'));
+    const row = $('<div class="user-row"></div>');
+    const info = $('<div></div>');
+    info.append($('<strong></strong>').text(user.username));
+    if (user.isAdmin) {
+        info.append(' <span class="badge">Admin</span>');
+    }
+
+    let details = (user.fullName || '') + ' | ' + (user.city || '');
+    if (user.age) {
+        details = details + ' | age ' + user.age;
+    }
+    info.append($('<div class="muted"></div>').text(details));
     row.append(info);
 
     if (currentUser.isAdmin && user._id !== currentUser._id) {
-        row.append($('<button class="btn btn-small btn-danger delete-user">').attr('data-id', user._id).text('Delete'));
+        row.append($('<button class="btn btn-small btn-danger delete-user">Delete</button>').attr('data-id', user._id));
     }
     return row;
 }
 
-function renderUsers(users) {
+function showUsers(users) {
     $('#users-list').empty();
     if (users.length === 0) {
         $('#users-list').append('<p class="empty">No users found.</p>');
         return;
     }
-    users.forEach(u => $('#users-list').append(buildUser(u)));
+    users.forEach(user => $('#users-list').append(buildUser(user)));
 }
 
 function loadUsers() {
-    api('GET', '/api/users')
-        .done(renderUsers)
-        .fail(xhr => showMessage('#users-message', errorText(xhr)));
+    $.get('/api/users', users => showUsers(users));
 }
 
 $('#searchUsersBtn').click(() => {
@@ -526,11 +513,13 @@ $('#searchUsersBtn').click(() => {
         minAge: $('#searchMinAge').val(),
         maxAge: $('#searchMaxAge').val()
     };
+
     if (params.minAge !== '' && params.maxAge !== '' && Number(params.minAge) > Number(params.maxAge)) {
         return showMessage('#user-search-message', 'Minimum age cannot be bigger than maximum age');
     }
-    api('GET', '/api/users/search?' + $.param(params))
-        .done(renderUsers)
+
+    $.get('/api/users/search', params)
+        .done(users => showUsers(users))
         .fail(xhr => showMessage('#user-search-message', errorText(xhr)));
 });
 
@@ -540,8 +529,9 @@ $('#clearUsersSearchBtn').click(() => {
 });
 
 $(document).on('click', '.delete-user', function () {
-    if (!confirm('Delete this user, their posts and memberships?')) return;
-    api('DELETE', `/api/users/${$(this).attr('data-id')}`)
+    if (!confirm('Delete this user and all of their posts?')) return;
+
+    $.ajax({ url: '/api/users/' + $(this).attr('data-id'), method: 'DELETE' })
         .done(() => {
             showMessage('#users-message', 'User deleted', 'success');
             loadUsers();
@@ -551,151 +541,92 @@ $(document).on('click', '.delete-user', function () {
         .fail(xhr => showMessage('#users-message', errorText(xhr)));
 });
 
-function drawEmptyChart(svg, width, height) {
-    svg.append('text')
-        .attr('x', width / 2)
-        .attr('y', height / 2)
-        .attr('text-anchor', 'middle')
-        .attr('fill', '#657786')
-        .text('No data yet');
-}
-
-function drawGroupsChart(data) {
-    const svg = d3.select('#chart-groups');
+function drawBarChart(svgId, data, color) {
+    const svg = d3.select(svgId);
     svg.selectAll('*').remove();
-    const width = +svg.attr('width');
-    const height = +svg.attr('height');
-    const margin = { top: 20, right: 10, bottom: 50, left: 35 };
 
-    if (data.length === 0) return drawEmptyChart(svg, width, height);
+    const width = 340;
+    const height = 260;
+    const barWidth = Math.min(40, (width - 20) / data.length - 10);
+    const gap = (width - data.length * barWidth) / (data.length + 1);
 
-    const x = d3.scaleBand()
-        .domain(data.map(d => d._id))
-        .range([margin.left, width - margin.right])
-        .padding(0.25);
-    const y = d3.scaleLinear()
-        .domain([0, d3.max(data, d => d.count)])
-        .nice()
-        .range([height - margin.bottom, margin.top]);
+    if (data.length === 0) {
+        svg.append('text').attr('x', width / 2).attr('y', height / 2)
+            .attr('text-anchor', 'middle').text('No data yet');
+        return;
+    }
 
-    svg.append('g')
-        .attr('transform', `translate(0,${height - margin.bottom})`)
-        .call(d3.axisBottom(x).tickFormat(name => name.length > 8 ? name.substring(0, 8) + '..' : name))
-        .selectAll('text')
-        .attr('transform', 'rotate(-30)')
-        .style('text-anchor', 'end');
+    const maxCount = d3.max(data, d => d.count);
+    const y = d3.scaleLinear().domain([0, maxCount]).range([0, height - 70]);
 
-    svg.append('g')
-        .attr('transform', `translate(${margin.left},0)`)
-        .call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('d')));
-
-    svg.selectAll('.bar')
+    svg.selectAll('rect')
         .data(data)
         .enter()
         .append('rect')
-        .attr('class', 'bar')
-        .attr('x', d => x(d._id))
-        .attr('width', x.bandwidth())
-        .attr('y', height - margin.bottom)
-        .attr('height', 0)
+        .attr('x', (d, i) => gap + i * (barWidth + gap))
+        .attr('y', d => height - 40 - y(d.count))
+        .attr('width', barWidth)
+        .attr('height', d => y(d.count))
         .attr('rx', 4)
-        .attr('fill', '#1da1f2')
-        .transition()
-        .duration(700)
-        .attr('y', d => y(d.count))
-        .attr('height', d => y(0) - y(d.count));
+        .attr('fill', color);
 
-    svg.selectAll('.bar-label')
+    svg.selectAll('.count')
         .data(data)
         .enter()
         .append('text')
-        .attr('x', d => x(d._id) + x.bandwidth() / 2)
-        .attr('y', d => y(d.count) - 4)
+        .attr('class', 'count')
+        .attr('x', (d, i) => gap + i * (barWidth + gap) + barWidth / 2)
+        .attr('y', d => height - 45 - y(d.count))
         .attr('text-anchor', 'middle')
-        .attr('font-size', '11px')
+        .attr('font-size', '12px')
         .text(d => d.count);
-}
 
-function drawMonthsChart(data) {
-    const svg = d3.select('#chart-months');
-    svg.selectAll('*').remove();
-    const width = +svg.attr('width');
-    const height = +svg.attr('height');
-    const margin = { top: 20, right: 15, bottom: 40, left: 35 };
-
-    if (data.length === 0) return drawEmptyChart(svg, width, height);
-
-    const x = d3.scalePoint()
-        .domain(data.map(d => d._id))
-        .range([margin.left + 10, width - margin.right - 10]);
-    const y = d3.scaleLinear()
-        .domain([0, d3.max(data, d => d.count)])
-        .nice()
-        .range([height - margin.bottom, margin.top]);
-
-    svg.append('g')
-        .attr('transform', `translate(0,${height - margin.bottom})`)
-        .call(d3.axisBottom(x));
-
-    svg.append('g')
-        .attr('transform', `translate(${margin.left},0)`)
-        .call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('d')));
-
-    const line = d3.line()
-        .x(d => x(d._id))
-        .y(d => y(d.count));
-
-    svg.append('path')
-        .datum(data)
-        .attr('fill', 'none')
-        .attr('stroke', '#17bf63')
-        .attr('stroke-width', 3)
-        .attr('d', line);
-
-    svg.selectAll('.dot')
+    svg.selectAll('.label')
         .data(data)
         .enter()
-        .append('circle')
-        .attr('cx', d => x(d._id))
-        .attr('cy', d => y(d.count))
-        .attr('r', 5)
-        .attr('fill', '#17bf63')
-        .append('title')
-        .text(d => `${d._id}: ${d.count} posts`);
+        .append('text')
+        .attr('class', 'label')
+        .attr('x', (d, i) => gap + i * (barWidth + gap) + barWidth / 2)
+        .attr('y', height - 20)
+        .attr('text-anchor', 'middle')
+        .attr('font-size', '10px')
+        .text(d => d._id.substring(0, 8));
 }
 
 function loadStats() {
-    api('GET', '/api/posts/stats')
-        .done(stats => {
-            drawGroupsChart(stats.perGroup);
-            drawMonthsChart(stats.perMonth);
-        })
-        .fail(xhr => alert(errorText(xhr)));
+    $.get('/api/posts/stats', stats => {
+        drawBarChart('#chart-groups', stats.perGroup, '#1da1f2');
+        drawBarChart('#chart-months', stats.perMonth, '#17bf63');
+    });
 }
 
 function addChatMessage(message) {
-    const item = $('<li class="chat-msg">');
-    if (message.user === currentUser.username) item.addClass('mine');
-    item.append($('<strong>').text(message.user));
-    item.append($('<span>').text(message.text));
+    const item = $('<li class="chat-msg"></li>');
+    if (message.user === currentUser.username) {
+        item.addClass('mine');
+    }
+    item.append($('<strong></strong>').text(message.user));
+    item.append($('<span></span>').text(message.text));
     $('#chat-messages').append(item);
-    const list = $('#chat-messages')[0];
-    list.scrollTop = list.scrollHeight;
+    $('#chat-messages').scrollTop($('#chat-messages')[0].scrollHeight);
 }
 
 function connectChat() {
     socket = io();
+
     socket.on('chatHistory', messages => {
         $('#chat-messages').empty();
-        messages.forEach(addChatMessage);
+        messages.forEach(message => addChatMessage(message));
     });
-    socket.on('chatMessage', addChatMessage);
+
+    socket.on('chatMessage', message => addChatMessage(message));
 }
 
 $('#sendChatBtn').click(() => {
     const text = $('#chatInput').val().trim();
-    if (!text || !socket) return;
-    socket.emit('chatMessage', text);
+    if (text === '') return;
+
+    socket.emit('chatMessage', { user: currentUser.username, text: text });
     $('#chatInput').val('');
 });
 

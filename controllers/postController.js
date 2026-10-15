@@ -1,15 +1,9 @@
+const mongoose = require('mongoose');
 const Post = require('../models/Post');
 const Group = require('../models/Group');
-const { isValidId, escapeRegex, cleanText } = require('../utils/helpers');
 
-function parseDate(value) {
-    if (!value) return undefined;
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? null : date;
-}
-
-async function findOwnPost(req, res) {
-    if (!isValidId(req.params.id)) {
+async function getMyPost(req, res) {
+    if (!mongoose.isValidObjectId(req.params.id)) {
         res.status(400).json({ error: 'Invalid post id' });
         return null;
     }
@@ -28,20 +22,26 @@ async function findOwnPost(req, res) {
 
 exports.create = async (req, res) => {
     try {
-        const content = cleanText(req.body.content);
-        const groupName = cleanText(req.body.groupName);
+        const content = (req.body.content || '').trim();
+        const groupName = req.body.groupName;
         const username = req.session.user.username;
 
-        if (!content) return res.status(400).json({ error: 'Post cannot be empty' });
-        if (content.length > 500) return res.status(400).json({ error: 'Post is too long (max 500)' });
+        if (content === '') {
+            return res.status(400).json({ error: 'Post cannot be empty' });
+        }
+        if (content.length > 500) {
+            return res.status(400).json({ error: 'Post is too long (max 500)' });
+        }
 
         const group = await Group.findOne({ name: groupName });
-        if (!group) return res.status(400).json({ error: 'Please choose an existing group' });
+        if (!group) {
+            return res.status(400).json({ error: 'Please choose an existing group' });
+        }
         if (!group.members.includes(username)) {
             return res.status(403).json({ error: 'Join the group before posting in it' });
         }
 
-        const post = new Post({ content, groupName, author: username });
+        const post = new Post({ content: content, groupName: groupName, author: username });
         await post.save();
         res.status(201).json(post);
     } catch (err) {
@@ -61,11 +61,10 @@ exports.list = async (req, res) => {
 exports.feed = async (req, res) => {
     try {
         const username = req.session.user.username;
-        const groups = await Group.find({ members: username }).select('name');
-        const groupNames = groups.map(g => g.name);
-        const posts = await Post.find({
-            $or: [{ groupName: { $in: groupNames } }, { author: username }]
-        }).sort({ createdAt: -1 });
+        const myGroups = await Group.find({ members: username });
+        const groupNames = myGroups.map(group => group.name);
+
+        const posts = await Post.find({ groupName: { $in: groupNames } }).sort({ createdAt: -1 });
         res.json(posts);
     } catch (err) {
         res.status(500).json({ error: 'Could not load feed' });
@@ -83,47 +82,37 @@ exports.mine = async (req, res) => {
 
 exports.search = async (req, res) => {
     try {
-        const author = cleanText(req.query.author);
-        const groupName = cleanText(req.query.groupName);
-        const content = cleanText(req.query.content);
-        const fromDate = parseDate(req.query.fromDate);
-        const toDate = parseDate(req.query.toDate);
-
-        if (fromDate === null || toDate === null) {
-            return res.status(400).json({ error: 'Invalid date' });
-        }
-        if (fromDate && toDate && fromDate > toDate) {
-            return res.status(400).json({ error: 'From date must be before To date' });
-        }
-
+        const { author, groupName, content, fromDate, toDate } = req.query;
         const query = {};
-        if (author) query.author = new RegExp(escapeRegex(author), 'i');
-        if (groupName) query.groupName = new RegExp(escapeRegex(groupName), 'i');
-        if (content) query.content = new RegExp(escapeRegex(content), 'i');
+
+        if (author) query.author = new RegExp(author, 'i');
+        if (groupName) query.groupName = new RegExp(groupName, 'i');
+        if (content) query.content = new RegExp(content, 'i');
         if (fromDate || toDate) {
             query.createdAt = {};
-            if (fromDate) query.createdAt.$gte = fromDate;
-            if (toDate) {
-                toDate.setHours(23, 59, 59, 999);
-                query.createdAt.$lte = toDate;
-            }
+            if (fromDate) query.createdAt.$gte = new Date(fromDate);
+            if (toDate) query.createdAt.$lte = new Date(toDate + 'T23:59:59');
         }
 
         const posts = await Post.find(query).sort({ createdAt: -1 });
         res.json(posts);
     } catch (err) {
-        res.status(500).json({ error: 'Search failed' });
+        res.status(400).json({ error: 'Invalid search' });
     }
 };
 
 exports.update = async (req, res) => {
     try {
-        const post = await findOwnPost(req, res);
+        const post = await getMyPost(req, res);
         if (!post) return;
 
-        const content = cleanText(req.body.content);
-        if (!content) return res.status(400).json({ error: 'Post cannot be empty' });
-        if (content.length > 500) return res.status(400).json({ error: 'Post is too long (max 500)' });
+        const content = (req.body.content || '').trim();
+        if (content === '') {
+            return res.status(400).json({ error: 'Post cannot be empty' });
+        }
+        if (content.length > 500) {
+            return res.status(400).json({ error: 'Post is too long (max 500)' });
+        }
 
         post.content = content;
         await post.save();
@@ -135,8 +124,9 @@ exports.update = async (req, res) => {
 
 exports.remove = async (req, res) => {
     try {
-        const post = await findOwnPost(req, res);
+        const post = await getMyPost(req, res);
         if (!post) return;
+
         await Post.findByIdAndDelete(post._id);
         res.json({ success: true });
     } catch (err) {
@@ -146,9 +136,15 @@ exports.remove = async (req, res) => {
 
 exports.like = async (req, res) => {
     try {
-        if (!isValidId(req.params.id)) return res.status(400).json({ error: 'Invalid post id' });
-        const post = await Post.findByIdAndUpdate(req.params.id, { $inc: { likes: 1 } }, { new: true });
-        if (!post) return res.status(404).json({ error: 'Post not found' });
+        if (!mongoose.isValidObjectId(req.params.id)) {
+            return res.status(400).json({ error: 'Invalid post id' });
+        }
+        const post = await Post.findById(req.params.id);
+        if (!post) {
+            return res.status(404).json({ error: 'Post not found' });
+        }
+        post.likes = post.likes + 1;
+        await post.save();
         res.json(post);
     } catch (err) {
         res.status(500).json({ error: 'Could not like post' });
@@ -161,11 +157,22 @@ exports.stats = async (req, res) => {
             { $group: { _id: '$groupName', count: { $sum: 1 } } },
             { $sort: { count: -1 } }
         ]);
-        const perMonth = await Post.aggregate([
-            { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$createdAt' } }, count: { $sum: 1 } } },
-            { $sort: { _id: 1 } }
-        ]);
-        res.json({ perGroup, perMonth: perMonth.slice(-6) });
+
+        const posts = await Post.find().select('createdAt');
+        const months = {};
+        posts.forEach(post => {
+            const date = new Date(post.createdAt);
+            const month = date.getMonth() + 1;
+            const key = date.getFullYear() + '-' + (month < 10 ? '0' + month : month);
+            months[key] = (months[key] || 0) + 1;
+        });
+
+        const perMonth = Object.keys(months)
+            .sort()
+            .slice(-6)
+            .map(key => ({ _id: key, count: months[key] }));
+
+        res.json({ perGroup: perGroup, perMonth: perMonth });
     } catch (err) {
         res.status(500).json({ error: 'Could not load statistics' });
     }

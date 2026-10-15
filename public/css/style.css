@@ -338,6 +338,10 @@ label {
     text-align: center;
 }
 
+.stats-columns p {
+    margin-top: 0;
+}
+
 .chart text {
     font-family: 'Nunito', sans-serif;
 }

@@ -1,45 +1,35 @@
+const mongoose = require('mongoose');
 const User = require('../models/User');
 const Group = require('../models/Group');
 const Post = require('../models/Post');
-const { isValidId, escapeRegex, cleanText, toNumber } = require('../utils/helpers');
-
-const publicFields = '-password -__v';
-
-function sessionUser(user) {
-    return { _id: user._id.toString(), username: user.username, isAdmin: user.isAdmin };
-}
-
-function validateProfile(fullName, city, age) {
-    if (fullName.length > 50) return 'Full name is too long';
-    if (city.length > 30) return 'City is too long';
-    if (Number.isNaN(age)) return 'Age must be a number';
-    if (age !== undefined && (age < 13 || age > 120)) return 'Age must be between 13 and 120';
-    return null;
-}
 
 exports.register = async (req, res) => {
     try {
-        const username = cleanText(req.body.username);
-        const password = cleanText(req.body.password);
-        const fullName = cleanText(req.body.fullName);
-        const city = cleanText(req.body.city);
-        const age = toNumber(req.body.age);
+        const username = (req.body.username || '').trim();
+        const password = (req.body.password || '').trim();
+        const fullName = (req.body.fullName || '').trim();
+        const city = (req.body.city || '').trim();
+        const age = req.body.age ? Number(req.body.age) : undefined;
 
-        if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
-            return res.status(400).json({ error: 'Username must be 3-20 letters, numbers or _' });
+        if (username.length < 3 || username.length > 20 || username.includes(' ')) {
+            return res.status(400).json({ error: 'Username must be 3-20 characters without spaces' });
         }
         if (password.length < 3) {
             return res.status(400).json({ error: 'Password must be at least 3 characters' });
         }
-        const profileError = validateProfile(fullName, city, age);
-        if (profileError) return res.status(400).json({ error: profileError });
+        if (age !== undefined && (isNaN(age) || age < 13 || age > 120)) {
+            return res.status(400).json({ error: 'Age must be a number between 13 and 120' });
+        }
 
-        const exists = await User.findOne({ username });
-        if (exists) return res.status(409).json({ error: 'Username already taken' });
+        const exists = await User.findOne({ username: username });
+        if (exists) {
+            return res.status(400).json({ error: 'Username already taken' });
+        }
 
         const user = new User({ username, password, fullName, city, age });
         await user.save();
-        req.session.user = sessionUser(user);
+
+        req.session.user = { _id: user._id.toString(), username: user.username, isAdmin: user.isAdmin };
         res.status(201).json(req.session.user);
     } catch (err) {
         res.status(500).json({ error: 'Registration failed' });
@@ -48,15 +38,19 @@ exports.register = async (req, res) => {
 
 exports.login = async (req, res) => {
     try {
-        const username = cleanText(req.body.username);
-        const password = cleanText(req.body.password);
-        if (!username || !password) {
+        const username = (req.body.username || '').trim();
+        const password = (req.body.password || '').trim();
+
+        if (username === '' || password === '') {
             return res.status(400).json({ error: 'Username and password are required' });
         }
-        const user = await User.findOne({ username, password });
-        if (!user) return res.status(401).json({ error: 'Invalid username or password' });
 
-        req.session.user = sessionUser(user);
+        const user = await User.findOne({ username: username, password: password });
+        if (!user) {
+            return res.status(401).json({ error: 'Invalid username or password' });
+        }
+
+        req.session.user = { _id: user._id.toString(), username: user.username, isAdmin: user.isAdmin };
         res.json(req.session.user);
     } catch (err) {
         res.status(500).json({ error: 'Login failed' });
@@ -64,17 +58,15 @@ exports.login = async (req, res) => {
 };
 
 exports.logout = (req, res) => {
-    req.session.destroy(() => {
-        res.json({ success: true });
-    });
+    req.session.destroy();
+    res.json({ success: true });
 };
 
 exports.me = async (req, res) => {
     try {
-        const user = await User.findById(req.session.user._id).select(publicFields);
+        const user = await User.findById(req.session.user._id).select('-password');
         if (!user) {
-            req.session.destroy(() => {});
-            return res.status(401).json({ error: 'User no longer exists' });
+            return res.status(401).json({ error: 'User not found' });
         }
         res.json(user);
     } catch (err) {
@@ -84,7 +76,7 @@ exports.me = async (req, res) => {
 
 exports.list = async (req, res) => {
     try {
-        const users = await User.find().select(publicFields).sort({ username: 1 });
+        const users = await User.find().select('-password').sort({ username: 1 });
         res.json(users);
     } catch (err) {
         res.status(500).json({ error: 'Could not load users' });
@@ -93,98 +85,91 @@ exports.list = async (req, res) => {
 
 exports.search = async (req, res) => {
     try {
-        const username = cleanText(req.query.username);
-        const city = cleanText(req.query.city);
-        const minAge = toNumber(req.query.minAge);
-        const maxAge = toNumber(req.query.maxAge);
-
-        if (Number.isNaN(minAge) || Number.isNaN(maxAge)) {
-            return res.status(400).json({ error: 'Age filters must be numbers' });
-        }
-        if (minAge !== undefined && maxAge !== undefined && minAge > maxAge) {
-            return res.status(400).json({ error: 'Minimum age cannot be bigger than maximum age' });
-        }
-
+        const { username, city, minAge, maxAge } = req.query;
         const query = {};
-        if (username) query.username = new RegExp(escapeRegex(username), 'i');
-        if (city) query.city = new RegExp(escapeRegex(city), 'i');
-        if (minAge !== undefined || maxAge !== undefined) {
+
+        if (username) query.username = new RegExp(username, 'i');
+        if (city) query.city = new RegExp(city, 'i');
+        if (minAge || maxAge) {
             query.age = {};
-            if (minAge !== undefined) query.age.$gte = minAge;
-            if (maxAge !== undefined) query.age.$lte = maxAge;
+            if (minAge) query.age.$gte = Number(minAge);
+            if (maxAge) query.age.$lte = Number(maxAge);
         }
 
-        const users = await User.find(query).select(publicFields).sort({ username: 1 });
+        const users = await User.find(query).select('-password').sort({ username: 1 });
         res.json(users);
     } catch (err) {
-        res.status(500).json({ error: 'Search failed' });
+        res.status(400).json({ error: 'Invalid search' });
     }
 };
 
 exports.update = async (req, res) => {
     try {
         const id = req.params.id;
-        if (!isValidId(id)) return res.status(400).json({ error: 'Invalid user id' });
+        if (!mongoose.isValidObjectId(id)) {
+            return res.status(400).json({ error: 'Invalid user id' });
+        }
         if (id !== req.session.user._id && !req.session.user.isAdmin) {
             return res.status(403).json({ error: 'You can only edit your own profile' });
         }
 
         const user = await User.findById(id);
-        if (!user) return res.status(404).json({ error: 'User not found' });
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
 
-        const fullName = cleanText(req.body.fullName);
-        const city = cleanText(req.body.city);
-        const age = toNumber(req.body.age);
-        const password = cleanText(req.body.password);
+        const age = req.body.age ? Number(req.body.age) : undefined;
+        const password = (req.body.password || '').trim();
 
-        const profileError = validateProfile(fullName, city, age);
-        if (profileError) return res.status(400).json({ error: profileError });
-        if (password && password.length < 3) {
+        if (age !== undefined && (isNaN(age) || age < 13 || age > 120)) {
+            return res.status(400).json({ error: 'Age must be a number between 13 and 120' });
+        }
+        if (password !== '' && password.length < 3) {
             return res.status(400).json({ error: 'Password must be at least 3 characters' });
         }
 
-        user.fullName = fullName;
-        user.city = city;
+        user.fullName = (req.body.fullName || '').trim();
+        user.city = (req.body.city || '').trim();
         user.age = age;
-        if (password) user.password = password;
+        if (password !== '') {
+            user.password = password;
+        }
         await user.save();
 
-        res.json(await User.findById(id).select(publicFields));
+        const updated = await User.findById(id).select('-password');
+        res.json(updated);
     } catch (err) {
-        res.status(500).json({ error: 'Update failed' });
+        res.status(400).json({ error: 'Update failed' });
     }
 };
 
 exports.remove = async (req, res) => {
     try {
         const id = req.params.id;
-        if (!isValidId(id)) return res.status(400).json({ error: 'Invalid user id' });
-        const isSelf = id === req.session.user._id;
-        if (!isSelf && !req.session.user.isAdmin) {
+        if (!mongoose.isValidObjectId(id)) {
+            return res.status(400).json({ error: 'Invalid user id' });
+        }
+        const isMe = id === req.session.user._id;
+        if (!isMe && !req.session.user.isAdmin) {
             return res.status(403).json({ error: 'You can only delete your own account' });
         }
 
         const user = await User.findById(id);
-        if (!user) return res.status(404).json({ error: 'User not found' });
-
-        await Post.deleteMany({ author: user.username });
-        await Group.updateMany({}, { $pull: { members: user.username } });
-
-        const ownedGroups = await Group.find({ adminUser: user.username });
-        for (const group of ownedGroups) {
-            if (group.members.length > 0) {
-                group.adminUser = group.members[0];
-                await group.save();
-            } else {
-                await Post.deleteMany({ groupName: group.name });
-                await Group.findByIdAndDelete(group._id);
-            }
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
         }
 
+        const myGroups = await Group.find({ adminUser: user.username });
+        for (const group of myGroups) {
+            await Post.deleteMany({ groupName: group.name });
+            await Group.findByIdAndDelete(group._id);
+        }
+        await Post.deleteMany({ author: user.username });
+        await Group.updateMany({}, { $pull: { members: user.username } });
         await User.findByIdAndDelete(id);
 
-        if (isSelf) {
-            return req.session.destroy(() => res.json({ success: true, loggedOut: true }));
+        if (isMe) {
+            req.session.destroy();
         }
         res.json({ success: true });
     } catch (err) {
