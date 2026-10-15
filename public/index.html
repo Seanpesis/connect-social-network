@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connect - Social Network</title>
+    <link rel="stylesheet" href="css/style.css">
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+    <script src="https://unpkg.com/react@17.0.2/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@17.0.2/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+
+<div id="auth-container" class="card hidden">
+    <div class="login-logo">Connect</div>
+    <p class="muted">Join the conversation today.</p>
+    <div id="auth-message" class="message"></div>
+
+    <div id="login-form">
+        <input type="text" id="loginUsername" placeholder="Username">
+        <input type="password" id="loginPassword" placeholder="Password">
+        <button class="btn" id="loginBtn">Log In</button>
+        <p class="muted">No account? <span class="link" id="showRegister">Register here</span></p>
+    </div>
+
+    <div id="register-form" class="hidden">
+        <input type="text" id="regUsername" placeholder="Username (3-20 letters/numbers)">
+        <input type="password" id="regPassword" placeholder="Password (at least 3 characters)">
+        <input type="text" id="regFullName" placeholder="Full name">
+        <div class="form-row">
+            <input type="text" id="regCity" placeholder="City">
+            <input type="number" id="regAge" placeholder="Age" min="13" max="120">
+        </div>
+        <button class="btn" id="registerBtn">Create Account</button>
+        <p class="muted">Already registered? <span class="link" id="showLogin">Log in</span></p>
+    </div>
+</div>
+
+<div id="app-container">
+    <div id="react-header"></div>
+
+    <div class="main-layout">
+        <div class="sidebar-left">
+            <div class="card">
+                <h3 class="card-title">My Profile</h3>
+                <div id="profile-message" class="message"></div>
+                <label for="profileFullName">Full name</label>
+                <input type="text" id="profileFullName">
+                <div class="form-row">
+                    <div>
+                        <label for="profileCity">City</label>
+                        <input type="text" id="profileCity">
+                    </div>
+                    <div>
+                        <label for="profileAge">Age</label>
+                        <input type="number" id="profileAge" min="13" max="120">
+                    </div>
+                </div>
+                <label for="profilePassword">New password (optional)</label>
+                <input type="password" id="profilePassword">
+                <div class="btn-group">
+                    <button class="btn btn-small" id="saveProfileBtn">Save</button>
+                    <button class="btn btn-small btn-danger" id="deleteAccountBtn">Delete Account</button>
+                </div>
+            </div>
+
+            <div id="react-media"></div>
+        </div>
+
+        <div class="content-center">
+            <div class="tabs">
+                <div class="tab active" data-tab="feed">Feed</div>
+                <div class="tab" data-tab="myposts">My Posts</div>
+                <div class="tab" data-tab="groups">Groups</div>
+                <div class="tab" data-tab="users">Users</div>
+                <div class="tab" data-tab="stats">Statistics</div>
+            </div>
+
+            <div class="tab-content" id="tab-feed">
+                <div class="card">
+                    <h3 class="card-title">Create Post</h3>
+                    <div id="post-message" class="message"></div>
+                    <select id="groupSelect"></select>
+                    <textarea id="postContent" placeholder="What's happening?" maxlength="500"></textarea>
+                    <button class="btn btn-small" id="createPostBtn">Post</button>
+                </div>
+
+                <div class="card">
+                    <h3 class="card-title">Search Posts</h3>
+                    <div id="post-search-message" class="message"></div>
+                    <div class="form-row">
+                        <input type="text" id="searchAuthor" placeholder="Author">
+                        <input type="text" id="searchGroup" placeholder="Group">
+                        <input type="text" id="searchContent" placeholder="Keywords">
+                    </div>
+                    <div class="form-row">
+                        <div>
+                            <label for="searchFrom">From date</label>
+                            <input type="date" id="searchFrom">
+                        </div>
+                        <div>
+                            <label for="searchTo">To date</label>
+                            <input type="date" id="searchTo">
+                        </div>
+                    </div>
+                    <div class="btn-group">
+                        <button class="btn btn-small" id="searchPostsBtn">Search</button>
+                        <button class="btn btn-small btn-grey" id="clearPostsSearchBtn">Clear</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="post-header">
+                        <h3 class="card-title" id="feedTitle" style="border: none; margin: 0; padding: 0;">My Feed</h3>
+                        <div class="btn-group">
+                            <button class="btn btn-small" id="showFeedBtn">My Feed</button>
+                            <button class="btn btn-small btn-outline" id="showAllBtn">All Posts</button>
+                        </div>
+                    </div>
+                    <div id="feed"></div>
+                </div>
+            </div>
+
+            <div class="tab-content hidden" id="tab-myposts">
+                <div class="card">
+                    <h3 class="card-title">Posts I Published</h3>
+                    <div id="my-posts"></div>
+                </div>
+            </div>
+
+            <div class="tab-content hidden" id="tab-groups">
+                <div class="card">
+                    <h3 class="card-title" id="groupFormTitle">Create Group</h3>
+                    <div id="group-message" class="message"></div>
+                    <input type="hidden" id="groupEditId">
+                    <div class="form-row">
+                        <input type="text" id="groupName" placeholder="Group name" maxlength="40">
+                        <select id="groupCategory"></select>
+                    </div>
+                    <textarea id="groupDescription" placeholder="Description" maxlength="300"></textarea>
+                    <div class="btn-group">
+                        <button class="btn btn-small" id="saveGroupBtn">Create</button>
+                        <button class="btn btn-small btn-grey hidden" id="cancelGroupEditBtn">Cancel</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3 class="card-title">Search Groups</h3>
+                    <div id="group-search-message" class="message"></div>
+                    <div class="form-row">
+                        <input type="text" id="searchGroupName" placeholder="Name">
+                        <select id="searchGroupCategory"></select>
+                    </div>
+                    <div class="form-row">
+                        <input type="text" id="searchGroupAdmin" placeholder="Admin username">
+                        <input type="number" id="searchGroupMinMembers" placeholder="Minimum members" min="0">
+                    </div>
+                    <div class="btn-group">
+                        <button class="btn btn-small" id="searchGroupsBtn">Search</button>
+                        <button class="btn btn-small btn-grey" id="clearGroupsSearchBtn">Clear</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3 class="card-title">Groups</h3>
+                    <div id="groups-list" class="groups-list"></div>
+                </div>
+            </div>
+
+            <div class="tab-content hidden" id="tab-users">
+                <div class="card">
+                    <h3 class="card-title">Search Users</h3>
+                    <div id="user-search-message" class="message"></div>
+                    <div class="form-row">
+                        <input type="text" id="searchUsername" placeholder="Username">
+                        <input type="text" id="searchCity" placeholder="City">
+                    </div>
+                    <div class="form-row">
+                        <input type="number" id="searchMinAge" placeholder="Minimum age" min="0">
+                        <input type="number" id="searchMaxAge" placeholder="Maximum age" min="0">
+                    </div>
+                    <div class="btn-group">
+                        <button class="btn btn-small" id="searchUsersBtn">Search</button>
+                        <button class="btn btn-small btn-grey" id="clearUsersSearchBtn">Clear</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3 class="card-title">Users</h3>
+                    <div id="users-message" class="message"></div>
+                    <div id="users-list"></div>
+                </div>
+            </div>
+
+            <div class="tab-content hidden" id="tab-stats">
+                <div class="card">
+                    <h3 class="card-title">Platform Statistics (D3.js)</h3>
+                    <div class="stats-columns">
+                        <div>
+                            <p class="muted">Posts per group</p>
+                            <svg id="chart-groups" class="chart" width="340" height="260"></svg>
+                        </div>
+                        <div>
+                            <p class="muted">Posts per month</p>
+                            <svg id="chart-months" class="chart" width="340" height="260"></svg>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="chat-window">
+    <div class="chat-header" id="chatHeader">
+        <span>Live Chat</span>
+        <span id="chatToggle">_</span>
+    </div>
+    <div id="chat-body" class="hidden">
+        <ul id="chat-messages"></ul>
+        <div class="chat-input-wrapper">
+            <input type="text" id="chatInput" placeholder="Type a message..." maxlength="300">
+            <button class="btn" id="sendChatBtn">Send</button>
+        </div>
+    </div>
+</div>
+
+<script src="js/app.js"></script>
+<script type="text/babel" src="js/components.js"></script>
+</body>
+</html>
